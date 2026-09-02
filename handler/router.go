@@ -3,6 +3,8 @@ package handler
 import (
 	"net/http"
 
+	"feedflow/backend"
+
 	jwtMiddleware "github.com/auth0/go-jwt-middleware"
 	jwt "github.com/form3tech-oss/jwt-go"
 	"github.com/gorilla/handlers"
@@ -10,25 +12,27 @@ import (
 )
 
 func InitRouter() http.Handler {
-    jwtMiddleware := jwtMiddleware.New(jwtMiddleware.Options{
-        ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
-            return []byte(mySigningKey), nil
-        },
-        SigningMethod: jwt.SigningMethodHS256,
-    })
+	jwtMiddleware := jwtMiddleware.New(jwtMiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			return []byte(mySigningKey), nil
+		},
+		SigningMethod: jwt.SigningMethodHS256,
+	})
 
-    router := mux.NewRouter()
+	router := mux.NewRouter()
 
-    router.Handle("/upload", jwtMiddleware.Handler(http.HandlerFunc(uploadHandler))).Methods("POST")
-    router.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(searchHandler))).Methods("GET")
-    // router.Handle("/post/{id}", jwtMiddleware.Handler(http.HandlerFunc(deleteHandler))).Methods("DELETE")
+	router.Handle("/upload", jwtMiddleware.Handler(http.HandlerFunc(uploadHandler))).Methods("POST")
+	router.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(searchHandler))).Methods("GET")
+	router.Handle("/post/{id}", jwtMiddleware.Handler(http.HandlerFunc(deleteHandler))).Methods("DELETE")
+	router.Handle("/ai/post", jwtMiddleware.Handler(http.HandlerFunc(generatePostHandler))).Methods("POST")
 
-    router.Handle("/signup", http.HandlerFunc(signupHandler)).Methods("POST")
-    router.Handle("/signin", http.HandlerFunc(signinHandler)).Methods("POST")
+	router.Handle("/signup", http.HandlerFunc(signupHandler)).Methods("POST")
+	router.Handle("/signin", http.HandlerFunc(signinHandler)).Methods("POST")
+	router.PathPrefix("/media/").Handler(http.StripPrefix("/media/", http.FileServer(http.Dir(backend.LocalStorageDirectory())))).Methods("GET")
 
-    originsOk := handlers.AllowedOrigins([]string{"*"})
-    headersOk := handlers.AllowedHeaders([]string{"Authorization", "Content-Type"})
-    methodsOk := handlers.AllowedMethods([]string{"GET", "POST", "DELETE"})
+	originsOk := handlers.AllowedOrigins([]string{"*"})
+	headersOk := handlers.AllowedHeaders([]string{"Authorization", "Content-Type"})
+	methodsOk := handlers.AllowedMethods([]string{"GET", "POST", "DELETE"})
 
-    return handlers.CORS(originsOk, headersOk, methodsOk)(router)
+	return handlers.CORS(originsOk, headersOk, methodsOk)(router)
 }

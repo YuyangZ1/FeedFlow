@@ -1,11 +1,11 @@
 package main
 
 import (
+	"feedflow/backend"
+	"feedflow/handler"
 	"fmt"
 	"log"
 	"net/http"
-	"socialai/backend"
-	"socialai/handler"
 )
 
 func main() {

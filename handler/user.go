@@ -3,41 +3,49 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"time"
 
-	"socialai/model"
-	"socialai/service"
+	"feedflow/constants"
+	"feedflow/model"
+	"feedflow/service"
 
 	jwt "github.com/form3tech-oss/jwt-go"
 )
 
-var mySigningKey = []byte("secret")
+var mySigningKey = loadSigningKey()
+
+var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,20}$`)
+
+func loadSigningKey() []byte {
+	key := os.Getenv("JWT_SECRET")
+	if key == "" {
+		log.Fatal("JWT_SECRET environment variable must be set")
+	}
+	return []byte(key)
+}
 
 func signinHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Received one signin request")
-	w.Header().Set("Content-Type", "text/plain")
 
-	//  Get User information from client
 	decoder := json.NewDecoder(r.Body)
 	var user model.User
 	if err := decoder.Decode(&user); err != nil {
-		http.Error(w, "Cannot decode user data from client", http.StatusBadRequest)
-		fmt.Printf("Cannot decode user data from client %v\n", err)
+		writeJSONError(w, http.StatusBadRequest, "Cannot decode user data from client")
 		return
 	}
 
 	success, err := service.CheckUser(user.Username, user.Password)
 	if err != nil {
-		http.Error(w, "Failed to read user from Elasticsearch", http.StatusInternalServerError)
-		fmt.Printf("Failed to read user from Elasticsearch %v\n", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to read user from Elasticsearch")
 		return
 	}
 
 	if !success {
-		http.Error(w, "User doesn't exists or wrong password", http.StatusUnauthorized)
-		fmt.Printf("User doesn't exists or wrong password\n")
+		writeJSONError(w, http.StatusUnauthorized, "User doesn't exist or wrong password")
 		return
 	}
 
@@ -48,43 +56,39 @@ func signinHandler(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := token.SignedString(mySigningKey)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
-		fmt.Printf("Failed to generate token %v\n", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}
 
-	w.Write([]byte(tokenString))
+	writeJSON(w, http.StatusOK, map[string]string{"token": tokenString})
 }
 
 func signupHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Received one signup request")
-	w.Header().Set("Content-Type", "text/plain")
 
 	decoder := json.NewDecoder(r.Body)
 	var user model.User
 	if err := decoder.Decode(&user); err != nil {
-		http.Error(w, "Cannot decode user data from client", http.StatusBadRequest)
-		fmt.Printf("Cannot decode user data from client %v\n", err)
+		writeJSONError(w, http.StatusBadRequest, "Cannot decode user data from client")
 		return
 	}
 
-	if user.Username == "" || user.Password == "" || regexp.MustCompile(`^[a-z0-9]$`).MatchString(user.Username) {
-		http.Error(w, "Invalid username or password", http.StatusBadRequest)
-		fmt.Printf("Invalid username or password\n")
+	if !usernamePattern.MatchString(user.Username) || len(user.Password) < constants.MIN_PASSWORD_LEN {
+		writeJSONError(w, http.StatusBadRequest, "Invalid username or password")
 		return
 	}
 
 	success, err := service.AddUser(&user)
 	if err != nil {
-		http.Error(w, "Failed to save user to Elasticsearch", http.StatusInternalServerError)
-		fmt.Printf("Failed to save user to Elasticsearch %v\n", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to save user to Elasticsearch")
 		return
 	}
 
 	if !success {
-		http.Error(w, "User already exists", http.StatusBadRequest)
-		fmt.Println("User already exists")
+		writeJSONError(w, http.StatusBadRequest, "User already exists")
 		return
 	}
+
 	fmt.Printf("User added successfully: %s.\n", user.Username)
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "user created"})
 }

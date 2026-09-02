@@ -2,14 +2,26 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
+	"feedflow/constants"
 	"fmt"
-	"socialai/constants"
+	"os"
+	"reflect"
 
 	"github.com/olivere/elastic/v7"
 )
 
+// ESClient is the interface the service layer depends on, so tests can
+// substitute a mock instead of talking to a real Elasticsearch cluster.
+type ESClient interface {
+	SearchInto(index string, query elastic.Query, from, size int, itemType reflect.Type) (items []interface{}, total int64, err error)
+	SaveToES(i interface{}, index string, id string) error
+	DeleteFromES(index, id string) error
+	GetInto(index, id string, itemType reflect.Type) (item interface{}, found bool, err error)
+}
+
 // a global ESClient
-var ESBackend *ElasticsearchBackend
+var ESBackend ESClient
 
 // Wrap ESClient
 type ElasticsearchBackend struct {
@@ -19,9 +31,17 @@ type ElasticsearchBackend struct {
 // ========================
 // initialize EsClient, create index
 func InitElasticsearchBackend() {
-	client, err := elastic.NewClient(
-		elastic.SetURL(constants.ES_URL),
-		elastic.SetBasicAuth(constants.ES_USERNAME, constants.ES_PASSWORD))
+	options := []elastic.ClientOptionFunc{
+		elastic.SetURL(getEnv("ES_URL", "http://localhost:9200")),
+		elastic.SetSniff(false),
+	}
+	username := os.Getenv("ES_USERNAME")
+	password := os.Getenv("ES_PASSWORD")
+	if username != "" || password != "" {
+		options = append(options, elastic.SetBasicAuth(username, password))
+	}
+
+	client, err := elastic.NewClient(options...)
 	if err != nil {
 		panic(err)
 	}
@@ -33,6 +53,10 @@ func InitElasticsearchBackend() {
 
 	if !exists {
 		mapping := `{
+           "settings": {
+               "number_of_shards": 1,
+               "number_of_replicas": 0
+           },
            "mappings": {
                "properties": {
                    "id":       { "type": "keyword" },
@@ -56,6 +80,10 @@ func InitElasticsearchBackend() {
 
 	if !exists {
 		mapping := `{
+                       "settings": {
+                               "number_of_shards": 1,
+                               "number_of_replicas": 0
+                       },
                        "mappings": {
                                "properties": {
                                        "username": {"type": "keyword"},
@@ -75,16 +103,25 @@ func InitElasticsearchBackend() {
 	ESBackend = &ElasticsearchBackend{client: client}
 }
 
-func (backend *ElasticsearchBackend) ReadFromES(query elastic.Query, index string) (*elastic.SearchResult, error) {
+func getEnv(key, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func (backend *ElasticsearchBackend) SearchInto(index string, query elastic.Query, from, size int, itemType reflect.Type) ([]interface{}, int64, error) {
 	searchResult, err := backend.client.Search().
 		Index(index).
 		Query(query).
-		Pretty(true).
+		From(from).
+		Size(size).
 		Do(context.Background())
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return searchResult, nil
+	return searchResult.Each(itemType), searchResult.TotalHits(), nil
 }
 
 func (backend *ElasticsearchBackend) SaveToES(i interface{}, index string, id string) error {
@@ -94,4 +131,28 @@ func (backend *ElasticsearchBackend) SaveToES(i interface{}, index string, id st
 		BodyJson(i).
 		Do(context.Background())
 	return err
+}
+
+func (backend *ElasticsearchBackend) DeleteFromES(index, id string) error {
+	_, err := backend.client.Delete().Index(index).Id(id).Do(context.Background())
+	return err
+}
+
+func (backend *ElasticsearchBackend) GetInto(index, id string, itemType reflect.Type) (interface{}, bool, error) {
+	result, err := backend.client.Get().Index(index).Id(id).Do(context.Background())
+	if err != nil {
+		if elastic.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if !result.Found {
+		return nil, false, nil
+	}
+
+	v := reflect.New(itemType).Interface()
+	if err := json.Unmarshal(result.Source, v); err != nil {
+		return nil, false, err
+	}
+	return reflect.ValueOf(v).Elem().Interface(), true, nil
 }

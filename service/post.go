@@ -1,60 +1,56 @@
 package service
 
 import (
+	"errors"
 	"mime/multipart"
 	"reflect"
-	"socialai/backend"
-	"socialai/constants"
-	"socialai/model"
+
+	"feedflow/backend"
+	"feedflow/constants"
+	"feedflow/model"
 
 	"github.com/olivere/elastic/v7"
 )
 
-func SearchPostsByUser(user string) ([]model.Post, error) {
-	// 1. create a query
-	query := elastic.NewTermQuery("user", user)
+var (
+	ErrPostNotFound = errors.New("post not found")
+	ErrForbidden    = errors.New("forbidden")
+)
 
-	// 2. call backend
-	searchResult, err := backend.ESBackend.ReadFromES(query, constants.POST_INDEX)
+func SearchPosts(user, keywords string, from, size int) ([]model.Post, int64, error) {
+	query := buildPostQuery(user, keywords)
+
+	items, total, err := backend.ESBackend.SearchInto(constants.POST_INDEX, query, from, size, reflect.TypeOf(model.Post{}))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return getPostFromSearchResult(searchResult), nil
+	posts := make([]model.Post, 0, len(items))
+	for _, item := range items {
+		posts = append(posts, item.(model.Post))
+	}
+	return posts, total, nil
 }
 
-func SearchPostsByKeywords(keywords string) ([]model.Post, error) {
-	//option1:return nothing
-	// if keywords == "" {
-	//  return nil, nil
-	// }
+// buildPostQuery combines the user and keywords filters when both are given,
+// instead of the two being mutually exclusive.
+func buildPostQuery(user, keywords string) elastic.Query {
+	bq := elastic.NewBoolQuery()
+	hasFilter := false
 
-	// 1. create a query
-	query := elastic.NewMatchQuery("message", keywords)
-	query.Operator("AND")
-	//option 2, return all
-	if keywords == "" {
-		query.ZeroTermsQuery("all")
+	if user != "" {
+		bq.Must(elastic.NewTermQuery("user", user))
+		hasFilter = true
+	}
+	if keywords != "" {
+		bq.Must(elastic.NewMatchQuery("message", keywords).Operator("AND"))
+		hasFilter = true
 	}
 
-	// 2. call backend
-	searchResult, err := backend.ESBackend.ReadFromES(query, constants.POST_INDEX)
-	if err != nil {
-		return nil, err
+	if !hasFilter {
+		return elastic.NewMatchAllQuery()
 	}
-
-	return getPostFromSearchResult(searchResult), nil
-}
-
-func getPostFromSearchResult(searchResult *elastic.SearchResult) []model.Post {
-	var ptype model.Post
-	var posts []model.Post
-
-	for _, item := range searchResult.Each(reflect.TypeOf(ptype)) {
-		p := item.(model.Post)
-		posts = append(posts, p)
-	}
-	return posts
+	return bq
 }
 
 func SavePost(post *model.Post, file multipart.File) error {
@@ -65,4 +61,25 @@ func SavePost(post *model.Post, file multipart.File) error {
 	post.Url = medialink
 
 	return backend.ESBackend.SaveToES(post, constants.POST_INDEX, post.Id)
+}
+
+func DeletePost(id, username string) error {
+	item, found, err := backend.ESBackend.GetInto(constants.POST_INDEX, id, reflect.TypeOf(model.Post{}))
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrPostNotFound
+	}
+
+	post := item.(model.Post)
+	if post.User != username {
+		return ErrForbidden
+	}
+
+	if err := backend.GCSBackend.DeleteFromGCS(post.Id); err != nil {
+		return err
+	}
+
+	return backend.ESBackend.DeleteFromES(constants.POST_INDEX, id)
 }

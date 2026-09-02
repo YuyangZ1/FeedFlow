@@ -1,15 +1,18 @@
 package handler
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 
-	"socialai/model"
-	"socialai/service"
+	"feedflow/constants"
+	"feedflow/model"
+	"feedflow/service"
 
 	jwt "github.com/form3tech-oss/jwt-go"
+	"github.com/gorilla/mux"
 	"github.com/pborman/uuid"
 )
 
@@ -27,72 +30,110 @@ var (
 	}
 )
 
+const (
+	defaultPageSize = 10
+	maxPageSize     = 50
+)
+
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
-    fmt.Println("Received one upload request")
+	fmt.Println("Received one upload request")
 
-    token := r.Context().Value("user")
-    claims := token.(*jwt.Token).Claims
-    username := claims.(jwt.MapClaims)["username"]
+	token := r.Context().Value("user")
+	claims := token.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"]
 
-    p := model.Post{
-        Id:      uuid.New(),
-        User:    username.(string),
-        Message: r.FormValue("message"),
-    }
+	r.Body = http.MaxBytesReader(w, r.Body, constants.MAX_UPLOAD_SIZE)
+	if err := r.ParseMultipartForm(constants.MAX_UPLOAD_SIZE); err != nil {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "Uploaded file is too large")
+		return
+	}
 
-    file, header, err := r.FormFile("media_file")
-    if err != nil {
-        http.Error(w, "Media file is not available", http.StatusBadRequest)
-        fmt.Printf("Media file is not available %v\n", err)
-        return
-    }
+	p := model.Post{
+		Id:      uuid.New(),
+		User:    username.(string),
+		Message: r.FormValue("message"),
+	}
 
-    suffix := filepath.Ext(header.Filename)
-    if t, ok := mediaTypes[suffix]; ok {
-        p.Type = t
-    } else {
-        p.Type = "unknown"
-    }
+	file, header, err := r.FormFile("media_file")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Media file is not available")
+		return
+	}
 
-    err = service.SavePost(&p, file)
-    if err != nil {
-        http.Error(w, "Failed to save post to backend", http.StatusInternalServerError)
-        fmt.Printf("Failed to save post to backend %v\n", err)
-        return
-    }
+	suffix := filepath.Ext(header.Filename)
+	t, ok := mediaTypes[suffix]
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Unsupported media file type")
+		return
+	}
+	p.Type = t
 
-    fmt.Println("Post is saved successfully.")
+	if err := service.SavePost(&p, file); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to save post to backend")
+		return
+	}
+
+	fmt.Println("Post is saved successfully.")
+	writeJSON(w, http.StatusCreated, p)
 }
 
 func searchHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Received one request for search")
-	w.Header().Set("Content-Type", "application/json")
 
-	// 1. process the request
-	// URL param -> string variable
 	user := r.URL.Query().Get("user")
 	keywords := r.URL.Query().Get("keywords")
+	page, pageSize := parsePagination(r)
+	from := (page - 1) * pageSize
 
-	// 2. call service to handle request
-	var posts []model.Post
-	var err error
-	if user != "" {
-		posts, err = service.SearchPostsByUser(user)
-	} else {
-		posts, err = service.SearchPostsByKeywords(keywords)
-	}
+	posts, total, err := service.SearchPosts(user, keywords, from, pageSize)
 	if err != nil {
-		http.Error(w, "Failed to read post from backend", http.StatusInternalServerError)
-		fmt.Printf("Failed to read post from backend %v.\n", err)
+		writeJSONError(w, http.StatusInternalServerError, "Failed to read post from backend")
 		return
 	}
 
-	// 3. construct response
-	js, err := json.Marshal(posts)
-	if err != nil {
-		http.Error(w, "Failed to parse posts into JSON format", http.StatusInternalServerError)
-		fmt.Printf("Failed to parse posts into JSON format %v.\n", err)
-		return
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"posts":    posts,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
+}
+
+func deleteHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Received one delete request")
+
+	token := r.Context().Value("user")
+	claims := token.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"].(string)
+
+	id := mux.Vars(r)["id"]
+
+	err := service.DeletePost(id, username)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"message": "post deleted"})
+	case errors.Is(err, service.ErrPostNotFound):
+		writeJSONError(w, http.StatusNotFound, "Post not found")
+	case errors.Is(err, service.ErrForbidden):
+		writeJSONError(w, http.StatusForbidden, "You do not have permission to delete this post")
+	default:
+		writeJSONError(w, http.StatusInternalServerError, "Failed to delete post")
 	}
-	w.Write(js)
+}
+
+func parsePagination(r *http.Request) (page, pageSize int) {
+	page = 1
+	if v, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && v > 0 {
+		page = v
+	}
+
+	pageSize = defaultPageSize
+	if v, err := strconv.Atoi(r.URL.Query().Get("pageSize")); err == nil && v > 0 {
+		pageSize = v
+	}
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
+
+	return page, pageSize
 }
