@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"feedflow/constants"
 	"fmt"
 	"os"
@@ -16,9 +17,14 @@ import (
 type ESClient interface {
 	SearchInto(index string, query elastic.Query, from, size int, itemType reflect.Type) (items []interface{}, total int64, err error)
 	SaveToES(i interface{}, index string, id string) error
+	CreateInES(i interface{}, index string, id string) error
 	DeleteFromES(index, id string) error
 	GetInto(index, id string, itemType reflect.Type) (item interface{}, found bool, err error)
 }
+
+// ErrDocumentExists is returned by CreateInES when a document with the same id
+// already exists.
+var ErrDocumentExists = errors.New("document already exists")
 
 // a global ESClient
 var ESBackend ESClient
@@ -130,6 +136,21 @@ func (backend *ElasticsearchBackend) SaveToES(i interface{}, index string, id st
 		Id(id).
 		BodyJson(i).
 		Do(context.Background())
+	return err
+}
+
+// CreateInES writes a document only if its id is not taken yet. Unlike
+// SaveToES, it never overwrites; Elasticsearch enforces this atomically.
+func (backend *ElasticsearchBackend) CreateInES(i interface{}, index string, id string) error {
+	_, err := backend.client.Index().
+		Index(index).
+		Id(id).
+		OpType("create").
+		BodyJson(i).
+		Do(context.Background())
+	if elastic.IsConflict(err) {
+		return ErrDocumentExists
+	}
 	return err
 }
 

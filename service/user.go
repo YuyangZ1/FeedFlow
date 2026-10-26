@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -8,22 +9,23 @@ import (
 	"feedflow/constants"
 	"feedflow/model"
 
-	"github.com/olivere/elastic/v7"
 	"golang.org/x/crypto/bcrypt"
 )
 
+var ErrUserExists = errors.New("user already exists")
+
+// CheckUser looks the user up by id (the username) rather than by search, so a
+// freshly registered user can sign in before the index refreshes.
 func CheckUser(username, password string) (bool, error) {
-	query := elastic.NewTermQuery("username", username)
-	items, total, err := backend.ESBackend.SearchInto(constants.USER_INDEX, query, 0, 1, reflect.TypeOf(model.User{}))
+	item, found, err := backend.ESBackend.GetInto(constants.USER_INDEX, username, reflect.TypeOf(model.User{}))
 	if err != nil {
 		return false, err
 	}
-
-	if total == 0 || len(items) == 0 {
+	if !found {
 		return false, nil
 	}
 
-	stored := items[0].(model.User)
+	stored := item.(model.User)
 	if err := bcrypt.CompareHashAndPassword([]byte(stored.Password), []byte(password)); err != nil {
 		return false, nil
 	}
@@ -32,26 +34,21 @@ func CheckUser(username, password string) (bool, error) {
 	return true, nil
 }
 
-func AddUser(user *model.User) (bool, error) {
-	query := elastic.NewTermQuery("username", user.Username)
-	_, total, err := backend.ESBackend.SearchInto(constants.USER_INDEX, query, 0, 1, reflect.TypeOf(model.User{}))
-	if err != nil {
-		return false, err
-	}
-
-	if total > 0 {
-		return false, nil
-	}
-
+// AddUser relies on Elasticsearch's create semantics for username uniqueness:
+// a search-then-write check would race and silently overwrite accounts.
+func AddUser(user *model.User) error {
 	hashed, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return false, err
+		return err
 	}
 	user.Password = string(hashed)
 
-	if err := backend.ESBackend.SaveToES(user, constants.USER_INDEX, user.Username); err != nil {
-		return false, err
+	if err := backend.ESBackend.CreateInES(user, constants.USER_INDEX, user.Username); err != nil {
+		if errors.Is(err, backend.ErrDocumentExists) {
+			return ErrUserExists
+		}
+		return err
 	}
 	fmt.Printf("User is added: %s\n", user.Username)
-	return true, nil
+	return nil
 }

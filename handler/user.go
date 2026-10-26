@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -78,14 +79,12 @@ func signupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	success, err := service.AddUser(&user)
-	if err != nil {
+	if err := service.AddUser(&user); err != nil {
+		if errors.Is(err, service.ErrUserExists) {
+			writeJSONError(w, http.StatusConflict, "User already exists")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, "Failed to save user to Elasticsearch")
-		return
-	}
-
-	if !success {
-		writeJSONError(w, http.StatusBadRequest, "User already exists")
 		return
 	}
 
