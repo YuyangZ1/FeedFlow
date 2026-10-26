@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"feedflow/service"
@@ -33,7 +34,11 @@ func generatePostHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrMissingOpenAIKey):
 		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, service.ErrIncompleteOutput):
+		log.Printf("generate post failed: %v", err)
+		writeJSONError(w, http.StatusBadGateway, "The AI response was cut off. Please try again or shorten your prompt.")
 	default:
+		log.Printf("generate post failed: %v", err)
 		writeJSONError(w, http.StatusBadGateway, "Failed to generate post text")
 	}
 }
