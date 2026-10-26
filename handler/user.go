@@ -17,7 +17,9 @@ import (
 	jwt "github.com/form3tech-oss/jwt-go"
 )
 
-var mySigningKey = loadSigningKey()
+// mySigningKey is loaded by InitRouter at startup rather than at package
+// init, so tests can import this package without JWT_SECRET set.
+var mySigningKey []byte
 
 var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{3,20}$`)
 

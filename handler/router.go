@@ -12,6 +12,8 @@ import (
 )
 
 func InitRouter() http.Handler {
+	mySigningKey = loadSigningKey()
+
 	jwtMiddleware := jwtMiddleware.New(jwtMiddleware.Options{
 		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
 			return []byte(mySigningKey), nil
